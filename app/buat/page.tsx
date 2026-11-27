@@ -1,11 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { TEMPLATES } from "@/lib/templates";
 import { authFetch, saveClaim } from "@/lib/authFetch";
+import { slugify, cleanSlugInput } from "@/lib/slugify";
+import { ROOT_DOMAIN } from "@/lib/site";
+
+type SlugState = "idle" | "checking" | "ok" | "taken" | "reserved" | "invalid";
 
 type Product = {
   name: string;
@@ -14,12 +18,20 @@ type Product = {
   previewUrl: string | null;
 };
 
-const emptyProduct = (): Product => ({ name: "", price: "", file: null, previewUrl: null });
+const emptyProduct = (): Product => ({
+  name: "",
+  price: "",
+  file: null,
+  previewUrl: null,
+});
 
 export default function BuatPage() {
   const router = useRouter();
 
   const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugEdited, setSlugEdited] = useState(false);
+  const [slugState, setSlugState] = useState<SlugState>("idle");
   const [bizType, setBizType] = useState("");
   const [city, setCity] = useState("");
   const [raw, setRaw] = useState("");
@@ -32,13 +44,56 @@ export default function BuatPage() {
   const [isError, setIsError] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // Cek ketersediaan alamat web setiap kali berubah (ditunda sebentar supaya tidak mengecek tiap huruf).
+  useEffect(() => {
+    const s = slug.replace(/-+$/, "");
+    if (!s) {
+      setSlugState("idle");
+      return;
+    }
+    setSlugState("checking");
+    let stale = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/slug-check?slug=${encodeURIComponent(s)}`);
+        const d = await r.json();
+        if (stale) return;
+        if (!r.ok) return setSlugState("idle"); // gagal cek: biarkan lanjut, server mengecek lagi saat simpan
+        setSlugState(
+          d.available
+            ? "ok"
+            : d.reason === "taken"
+              ? "taken"
+              : d.reason === "reserved"
+                ? "reserved"
+                : "invalid",
+        );
+      } catch {
+        if (!stale) setSlugState("idle");
+      }
+    }, 400);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
+  }, [slug]);
+
+  function ubahNama(v: string) {
+    setName(v);
+    if (!slugEdited) setSlug(slugify(v));
+  }
+
   function updateProduct(i: number, field: "name" | "price", value: string) {
-    setProducts((prev) => prev.map((p, idx) => (idx === i ? { ...p, [field]: value } : p)));
+    setProducts((prev) =>
+      prev.map((p, idx) => (idx === i ? { ...p, [field]: value } : p)),
+    );
   }
 
   function updateProductFile(i: number, file: File) {
     const previewUrl = URL.createObjectURL(file);
-    setProducts((prev) => prev.map((p, idx) => (idx === i ? { ...p, file, previewUrl } : p)));
+    setProducts((prev) =>
+      prev.map((p, idx) => (idx === i ? { ...p, file, previewUrl } : p)),
+    );
   }
 
   function addProduct() {
@@ -49,10 +104,15 @@ export default function BuatPage() {
     setProducts((prev) => prev.filter((_, idx) => idx !== i));
   }
 
-  async function uploadImage(file: File, pathPrefix: string): Promise<string | null> {
+  async function uploadImage(
+    file: File,
+    pathPrefix: string,
+  ): Promise<string | null> {
     const ext = file.name.split(".").pop();
     const path = `${pathPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    const { error } = await supabase.storage.from("umkm-images").upload(path, file);
+    const { error } = await supabase.storage
+      .from("umkm-images")
+      .upload(path, file);
     if (error) {
       console.error(error);
       return null;
@@ -64,9 +124,12 @@ export default function BuatPage() {
   function validate(): string[] {
     const missing: string[] = [];
     if (!name.trim()) missing.push("nama usaha");
+    if (!slug.replace(/-+$/, "")) missing.push("alamat web");
     if (!raw.trim()) missing.push("cerita usaha");
-    if (!/^62\d{8,13}$/.test(contact.replace(/\s/g, ""))) missing.push("nomor WhatsApp (format 62…)");
-    if (!products.some((p) => p.name.trim())) missing.push("minimal satu produk");
+    if (!/^62\d{8,13}$/.test(contact.replace(/\s/g, "")))
+      missing.push("nomor WhatsApp (format 62…)");
+    if (!products.some((p) => p.name.trim()))
+      missing.push("minimal satu produk");
     return missing;
   }
 
@@ -76,6 +139,17 @@ export default function BuatPage() {
     if (missing.length) {
       setIsError(true);
       setStatus(`Lengkapi dulu: ${missing.join(", ")}.`);
+      return;
+    }
+    if (
+      slugState === "taken" ||
+      slugState === "reserved" ||
+      slugState === "invalid"
+    ) {
+      setIsError(true);
+      setStatus(
+        "Alamat web belum bisa dipakai. Ganti dulu di bawah kolom nama usaha.",
+      );
       return;
     }
     setLoading(true);
@@ -113,7 +187,7 @@ export default function BuatPage() {
             desc: genData.products?.[i]?.desc || "",
             imageUrl,
           };
-        })
+        }),
       );
 
       // 3) Simpan semuanya ke database lewat API (pakai service role di server)
@@ -122,6 +196,7 @@ export default function BuatPage() {
         method: "POST",
         body: JSON.stringify({
           name,
+          slug: slug.replace(/-+$/, ""),
           bizType,
           city,
           raw,
@@ -133,9 +208,13 @@ export default function BuatPage() {
         }),
       });
       const createData = await createRes.json();
-      if (!createRes.ok) throw new Error(createData.error || "Gagal menyimpan halaman");
+      if (!createRes.ok) {
+        if (createRes.status === 409) setSlugState("taken");
+        throw new Error(createData.error || "Gagal menyimpan halaman");
+      }
 
-      if (createData.claimToken) saveClaim({ slug: createData.slug, token: createData.claimToken });
+      if (createData.claimToken)
+        saveClaim({ slug: createData.slug, token: createData.claimToken });
       setStatus("Berhasil! Membuka pratinjau halamanmu…");
       router.push(`/toko/${createData.slug}?pv=${createData.pv}`);
     } catch (err: any) {
@@ -162,8 +241,8 @@ export default function BuatPage() {
           </Link>
           <h1>Bikin landing page usahamu</h1>
           <p>
-            Isi info usaha dan produk. Tampilan halamanmu langsung terlihat di sebelah kanan saat kamu
-            mengetik.
+            Isi info usaha dan produk. Tampilan halamanmu langsung terlihat di
+            sebelah kanan saat kamu mengetik.
           </p>
         </div>
 
@@ -173,16 +252,82 @@ export default function BuatPage() {
               <legend>Tentang usahamu</legend>
               <label>
                 Nama usaha
-                <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Contoh: Kopi Kulo" />
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => ubahNama(e.target.value)}
+                  placeholder="Contoh: Kopi Kulo"
+                />
               </label>
+              <div className="addr">
+                <span className="addrl">Alamat web kamu</span>
+                <div className="addrrow">
+                  <input
+                    type="text"
+                    aria-label="Alamat web"
+                    value={slug}
+                    onChange={(e) => {
+                      setSlugEdited(true);
+                      setSlug(cleanSlugInput(e.target.value));
+                    }}
+                    onBlur={() => setSlug((v) => v.replace(/-+$/, ""))}
+                    placeholder="nama-usahamu"
+                    maxLength={40}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  <span className="addrs">
+                    .{ROOT_DOMAIN || "instalaman.my.id"}
+                  </span>
+                </div>
+                <p
+                  className={`addrm ${slugState === "ok" ? "ok" : slugState === "taken" || slugState === "reserved" || slugState === "invalid" ? "bad" : ""}`}
+                  role="status"
+                >
+                  {slugState === "checking" && "Mengecek alamat…"}
+                  {slugState === "ok" &&
+                    `✓ Tersedia: ${slug.replace(/-+$/, "")}.${ROOT_DOMAIN || "instalaman.my.id"}`}
+                  {slugState === "taken" &&
+                    "Alamat ini sudah dipakai usaha lain. Ubah sedikit, misalnya tambah nama kota."}
+                  {slugState === "reserved" &&
+                    "Nama ini dicadangkan sistem. Pilih yang lain."}
+                  {slugState === "invalid" &&
+                    "Pakai huruf, angka, dan tanda -, minimal 3 karakter."}
+                  {slugState === "idle" &&
+                    "Otomatis dari nama usaha, boleh kamu ubah. Alamat ini aktif setelah halaman diterbitkan."}
+                </p>
+                {slugEdited && (
+                  <button
+                    type="button"
+                    className="addrr"
+                    onClick={() => {
+                      setSlugEdited(false);
+                      setSlug(slugify(name));
+                    }}
+                  >
+                    Samakan lagi dengan nama usaha
+                  </button>
+                )}
+              </div>
               <div className="two">
                 <label>
                   Jenis usaha
-                  <input type="text" value={bizType} onChange={(e) => setBizType(e.target.value)} placeholder="Contoh: Kedai kopi & camilan" />
+                  <input
+                    type="text"
+                    value={bizType}
+                    onChange={(e) => setBizType(e.target.value)}
+                    placeholder="Contoh: Kedai kopi & camilan"
+                  />
                 </label>
                 <label>
                   Kota
-                  <input type="text" value={city} onChange={(e) => setCity(e.target.value)} placeholder="Contoh: Yogyakarta" />
+                  <input
+                    type="text"
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    placeholder="Contoh: Yogyakarta"
+                  />
                 </label>
               </div>
               <label>
@@ -198,8 +343,15 @@ export default function BuatPage() {
             <fieldset>
               <legend>Kontak dan foto</legend>
               <label>
-                Nomor WhatsApp <small>format 62…, tanpa tanda + atau spasi</small>
-                <input type="tel" inputMode="numeric" value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contoh: 6281234567890" />
+                Nomor WhatsApp{" "}
+                <small>format 62…, tanpa tanda + atau spasi</small>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  value={contact}
+                  onChange={(e) => setContact(e.target.value)}
+                  placeholder="Contoh: 6281234567890"
+                />
               </label>
               <label>
                 Foto cover <small>opsional</small>
@@ -216,7 +368,9 @@ export default function BuatPage() {
                     }}
                   />
                   {coverPreview && <img src={coverPreview} alt="" />}
-                  <span>{coverPreview ? "Ganti foto cover" : "Pilih foto cover"}</span>
+                  <span>
+                    {coverPreview ? "Ganti foto cover" : "Pilih foto cover"}
+                  </span>
                 </span>
               </label>
             </fieldset>
@@ -226,9 +380,25 @@ export default function BuatPage() {
               <div id="pl">
                 {products.map((p, i) => (
                   <div className="prod" key={i}>
-                    <input type="text" value={p.name} onChange={(e) => updateProduct(i, "name", e.target.value)} placeholder="Contoh: Kopi Susu Literan" />
-                    <input type="text" value={p.price} onChange={(e) => updateProduct(i, "price", e.target.value)} placeholder="Contoh: Rp25.000" />
-                    <button type="button" className="x" onClick={() => removeProduct(i)}>
+                    <input
+                      type="text"
+                      value={p.name}
+                      onChange={(e) => updateProduct(i, "name", e.target.value)}
+                      placeholder="Contoh: Kopi Susu Literan"
+                    />
+                    <input
+                      type="text"
+                      value={p.price}
+                      onChange={(e) =>
+                        updateProduct(i, "price", e.target.value)
+                      }
+                      placeholder="Contoh: Rp25.000"
+                    />
+                    <button
+                      type="button"
+                      className="x"
+                      onClick={() => removeProduct(i)}
+                    >
                       Hapus
                     </button>
                     <label className="drop">
@@ -241,7 +411,9 @@ export default function BuatPage() {
                         }}
                       />
                       {p.previewUrl && <img src={p.previewUrl} alt="" />}
-                      <span>{p.previewUrl ? "Ganti foto" : "Foto produk (opsional)"}</span>
+                      <span>
+                        {p.previewUrl ? "Ganti foto" : "Foto produk (opsional)"}
+                      </span>
                     </label>
                   </div>
                 ))}
@@ -256,8 +428,15 @@ export default function BuatPage() {
               <div className="tsel">
                 {TEMPLATES.map((t) =>
                   t.premium ? (
-                    <a key={t.key} href={`/template/${t.key}`} target="_blank" rel="noopener noreferrer">
-                      <span className="tsw" style={{ background: t.swatch[0] }}>{t.emoji}</span>
+                    <a
+                      key={t.key}
+                      href={`/template/${t.key}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <span className="tsw" style={{ background: t.swatch[0] }}>
+                        {t.emoji}
+                      </span>
                       <span>
                         <b>{t.name}</b>
                         <small>{t.category}</small>
@@ -266,25 +445,41 @@ export default function BuatPage() {
                     </a>
                   ) : (
                     <div key={t.key} className="on">
-                      <span className="tsw" style={{ background: t.swatch[0] }}>{t.emoji}</span>
+                      <span className="tsw" style={{ background: t.swatch[0] }}>
+                        {t.emoji}
+                      </span>
                       <span>
                         <b>{t.name}</b>
                         <small>Dipakai di pratinjau</small>
                       </span>
-                      <span className="tlock" style={{ color: "var(--or)" }}>✓ Terpilih</span>
+                      <span className="tlock" style={{ color: "var(--or)" }}>
+                        ✓ Terpilih
+                      </span>
                     </div>
-                  )
+                  ),
                 )}
               </div>
               <p className="tnote">
-                Paket gratis untuk mencoba: kamu bisa membuat dan melihat pratinjau. Untuk menayangkannya online dan membuka semua template, berlangganan. <a href="/template">Lihat semua contoh</a>
+                Paket gratis untuk mencoba: kamu bisa membuat dan melihat
+                pratinjau. Untuk menayangkannya online dan membuka semua
+                template, berlangganan.{" "}
+                <a href="/template">Lihat semua contoh</a>
               </p>
             </fieldset>
 
-            <p className="err" role="alert" style={isError ? undefined : { color: "var(--ink)" }}>
+            <p
+              className="err"
+              role="alert"
+              style={isError ? undefined : { color: "var(--ink)" }}
+            >
               {status}
             </p>
-            <button className="btn" type="submit" disabled={loading} style={loading ? { opacity: 0.6 } : undefined}>
+            <button
+              className="btn"
+              type="submit"
+              disabled={loading}
+              style={loading ? { opacity: 0.6 } : undefined}
+            >
               {loading ? "Memproses…" : "✨ Buat landing page dengan AI"}
             </button>
           </form>
@@ -297,10 +492,19 @@ export default function BuatPage() {
                 <i />
                 <i />
               </div>
-              <div className="cv" style={coverPreview ? { backgroundImage: `url(${coverPreview})` } : undefined} />
+              <div
+                className="cv"
+                style={
+                  coverPreview
+                    ? { backgroundImage: `url(${coverPreview})` }
+                    : undefined
+                }
+              />
               <div className="pb">
                 <h3>{name.trim() || "Nama usahamu"}</h3>
-                <div className="m">{[bizType.trim(), city.trim()].filter(Boolean).join(" di ")}</div>
+                <div className="m">
+                  {[bizType.trim(), city.trim()].filter(Boolean).join(" di ")}
+                </div>
                 <p>{raw.trim() || "Ceritamu akan tampil di sini."}</p>
                 <div>
                   {products
@@ -315,7 +519,12 @@ export default function BuatPage() {
                       </div>
                     ))}
                 </div>
-                <a className="wa" href={waHref} target="_blank" rel="noopener noreferrer">
+                <a
+                  className="wa"
+                  href={waHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
                   Pesan lewat WhatsApp
                 </a>
               </div>

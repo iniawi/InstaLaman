@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { slugify, randomSuffix } from "@/lib/slugify";
+import { slugify, randomSuffix, isValidSlug } from "@/lib/slugify";
 import { RESERVED_SUBDOMAINS } from "@/lib/site";
 import { getUser } from "@/lib/serverAuth";
 import { previewToken } from "@/lib/preview";
@@ -12,6 +12,7 @@ export async function POST(req: NextRequest) {
     const user = await getUser(req); // opsional: kalau sedang login, halaman langsung jadi miliknya
     const {
       name,
+      slug: wantedSlug,
       bizType,
       city,
       raw,
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest) {
       products,
     } = body as {
       name: string;
+      slug?: string;
       bizType: string;
       city: string;
       raw: string;
@@ -29,24 +31,72 @@ export async function POST(req: NextRequest) {
       tagline: string;
       about: string;
       coverUrl: string | null;
-      products: { name: string; price: string; desc: string; imageUrl: string | null }[];
+      products: {
+        name: string;
+        price: string;
+        desc: string;
+        imageUrl: string | null;
+      }[];
     };
 
     if (!name) {
-      return NextResponse.json({ error: "Nama usaha wajib diisi." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Nama usaha wajib diisi." },
+        { status: 400 },
+      );
     }
 
-    // Cari slug unik
-    const baseSlug = slugify(name) || "usaha";
-    let slug = RESERVED_SUBDOMAINS.has(baseSlug) ? `${baseSlug}-${randomSuffix(3)}` : baseSlug;
-    for (let i = 0; i < 5; i++) {
-      const { data: existing } = await supabaseAdmin
+    // Alamat web (subdomain). Kalau pelanggan memilih sendiri, pakai itu dan tolak kalau tidak sah/sudah dipakai.
+    // Kalau tidak ada, dibuat otomatis dari nama usaha dan diberi akhiran acak bila bentrok.
+    const chosen =
+      typeof wantedSlug === "string" && wantedSlug.trim()
+        ? slugify(wantedSlug)
+        : "";
+    let slug: string;
+    if (chosen) {
+      if (!isValidSlug(chosen)) {
+        return NextResponse.json(
+          {
+            error:
+              "Alamat web pakai huruf, angka, dan tanda -, minimal 3 karakter.",
+          },
+          { status: 400 },
+        );
+      }
+      if (RESERVED_SUBDOMAINS.has(chosen)) {
+        return NextResponse.json(
+          { error: "Alamat web itu dicadangkan sistem. Pilih yang lain." },
+          { status: 400 },
+        );
+      }
+      const { data: taken } = await supabaseAdmin
         .from("umkm")
         .select("id")
-        .eq("slug", slug)
+        .eq("slug", chosen)
         .maybeSingle();
-      if (!existing) break;
-      slug = `${baseSlug}-${randomSuffix(3)}`;
+      if (taken) {
+        return NextResponse.json(
+          {
+            error: `Alamat ${chosen} sudah dipakai usaha lain. Ganti dulu ya.`,
+          },
+          { status: 409 },
+        );
+      }
+      slug = chosen;
+    } else {
+      const baseSlug = slugify(name) || "usaha";
+      slug = RESERVED_SUBDOMAINS.has(baseSlug)
+        ? `${baseSlug}-${randomSuffix(3)}`
+        : baseSlug;
+      for (let i = 0; i < 5; i++) {
+        const { data: existing } = await supabaseAdmin
+          .from("umkm")
+          .select("id")
+          .eq("slug", slug)
+          .maybeSingle();
+        if (!existing) break;
+        slug = `${baseSlug}-${randomSuffix(3)}`;
+      }
     }
 
     const { data: umkmRow, error: umkmError } = await supabaseAdmin
@@ -67,6 +117,16 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (umkmError) {
+      // Dua orang mengambil alamat yang sama di waktu bersamaan.
+      if (umkmError.code === "23505") {
+        return NextResponse.json(
+          {
+            error:
+              "Alamat web itu baru saja dipakai orang lain. Ganti dulu ya.",
+          },
+          { status: 409 },
+        );
+      }
       return NextResponse.json({ error: umkmError.message }, { status: 500 });
     }
 
@@ -79,9 +139,14 @@ export async function POST(req: NextRequest) {
         image_url: p.imageUrl,
         sort_order: i,
       }));
-      const { error: productsError } = await supabaseAdmin.from("products").insert(rows);
+      const { error: productsError } = await supabaseAdmin
+        .from("products")
+        .insert(rows);
       if (productsError) {
-        return NextResponse.json({ error: productsError.message }, { status: 500 });
+        return NextResponse.json(
+          { error: productsError.message },
+          { status: 500 },
+        );
       }
     }
 
@@ -97,6 +162,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ slug, claimToken, pv: previewToken(slug) });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Terjadi kesalahan." }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message || "Terjadi kesalahan." },
+      { status: 500 },
+    );
   }
 }

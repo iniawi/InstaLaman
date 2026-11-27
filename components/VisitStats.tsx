@@ -29,7 +29,8 @@ function useCountUp(target: number | null) {
   return target === null ? null : val;
 }
 
-const fmt = (n: number | null) => (n === null ? "–" : n.toLocaleString("id-ID"));
+const fmt = (n: number | null) =>
+  n === null ? "–" : n.toLocaleString("id-ID");
 
 export default function VisitStats() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -71,7 +72,10 @@ export default function VisitStats() {
         return;
       }
       setFailed(false);
-      setStats({ total: Number(data.total_visits), unique: Number(data.unique_visitors) });
+      setStats({
+        total: Number(data.total_visits),
+        unique: Number(data.unique_visitors),
+      });
     };
 
     (async () => {
@@ -90,14 +94,24 @@ export default function VisitStats() {
     // Realtime 1: angka total berubah di database -> langsung tampil.
     const statsCh = supabase
       .channel("site-stats")
-      .on("postgres_changes", { event: "*", schema: "public", table: "site_stats" }, (payload) => {
-        const r: any = payload.new;
-        if (r && alive) setStats({ total: Number(r.total_visits), unique: Number(r.unique_visitors) });
-      })
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "site_stats" },
+        (payload) => {
+          const r: any = payload.new;
+          if (r && alive)
+            setStats({
+              total: Number(r.total_visits),
+              unique: Number(r.unique_visitors),
+            });
+        },
+      )
       .subscribe();
 
     // Realtime 2: jumlah orang yang sedang membuka halaman ini (Presence).
-    const presence = supabase.channel("site-online", { config: { presence: { key: vid } } });
+    const presence = supabase.channel("site-online", {
+      config: { presence: { key: vid } },
+    });
     presence
       .on("presence", { event: "sync" }, () => {
         if (alive) setOnline(Object.keys(presence.presenceState()).length);
@@ -120,14 +134,26 @@ export default function VisitStats() {
   return (
     <section id="kunjungan" className="sec">
       <div className="wrap">
-        <span className="eb">Statistik langsung</span>
+        {/* <span className="eb">Statistik langsung</span> */}
         <h2 className="st">Berapa orang yang sudah berkunjung</h2>
-        <p className="sub2">Angka dihitung dari kunjungan sungguhan dan berubah sendiri tanpa perlu refresh.</p>
+        <p className="sub2">
+          Angka dihitung dari kunjungan sungguhan dan berubah sendiri tanpa
+          perlu refresh.
+        </p>
 
         <div className="stats">
           <div className="stc">
             <span className="sti">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
                 <circle cx="12" cy="12" r="3" />
               </svg>
@@ -139,7 +165,16 @@ export default function VisitStats() {
 
           <div className="stc">
             <span className="sti">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <circle cx="12" cy="8" r="4" />
                 <path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7" />
               </svg>
@@ -151,7 +186,16 @@ export default function VisitStats() {
 
           <div className="stc">
             <span className="sti">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0" />
                 <circle cx="12" cy="19.5" r="1" fill="currentColor" />
               </svg>
@@ -164,7 +208,12 @@ export default function VisitStats() {
           </div>
         </div>
 
-        {failed && <p className="stnote">Data kunjungan belum bisa dimuat. Coba muat ulang halaman sebentar lagi.</p>}
+        {failed && (
+          <p className="stnote">
+            Data kunjungan belum bisa dimuat. Coba muat ulang halaman sebentar
+            lagi.
+          </p>
+        )}
       </div>
     </section>
   );

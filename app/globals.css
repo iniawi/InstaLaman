@@ -2109,3 +2109,63 @@ a.tp:hover {
 .pc2.hot .pc2-note {
   color: #ffb98a;
 }
+/* Kolom alamat web (subdomain) di halaman /buat */
+.addr {
+  display: grid;
+  gap: 6px;
+}
+.addrl {
+  font-weight: 600;
+  font-size: 14px;
+}
+.addrrow {
+  display: flex;
+  align-items: center;
+  background: var(--fld);
+  border: 1.5px solid transparent;
+  border-radius: 14px;
+  padding-right: 15px;
+}
+.addrrow:focus-within {
+  border-color: var(--sky);
+  background: var(--card);
+}
+.addrrow input[type="text"],
+.addrrow input[type="text"]:focus {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  padding: 13px 0 13px 15px;
+}
+.addrs {
+  flex: none;
+  color: var(--mut);
+  font-weight: 500;
+  font-size: 15px;
+}
+.addrm {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--mut);
+  min-height: 1.2em;
+}
+.addrm.ok {
+  color: #15803d;
+}
+.addrm.bad {
+  color: #d6322e;
+}
+.addrr {
+  justify-self: start;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: 600 13px inherit;
+  font-family: inherit;
+  color: var(--ord);
+  cursor: pointer;
+  text-decoration: underline;
+}
